@@ -1,0 +1,213 @@
+---
+title: "Analytical Sales Report"
+subtitle: "Practicum II CS5200"
+author: "Sai Prasasth Koundinya Gandrakota"
+date: "Spring 2024"
+output:
+  pdf_document: default
+  html_notebook: default
+
+---
+```{r Install and Load Packages, echo = FALSE, results='hide', warning=FALSE, message=FALSE}
+# Store names of packages required for this script
+packages <- c("RMySQL", "RSQLite", "knitr", "ggplot2", "DBI")
+
+# Install packages not yet installed
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+
+# Load all packages by applying 'library' function
+invisible(lapply(packages, library, character.only = TRUE))
+```
+
+
+
+```{r Connect to DB, echo = FALSE, results='hide', warning=FALSE}
+# Connect to MySQL DB
+con <- dbConnect(MySQL(), 
+                   host = "database-1.czc6oymseewd.us-east-1.rds.amazonaws.com",
+                   user = "admin",
+                   password = "8576939257",
+                   dbname = "pharma_olap_db",
+                   port = 3306)
+```
+
+## Top 5 Sales Reps with the Most Sales (Broken Down by Year)
+
+```{sql Analytical Query I, connection=con, output.var="df1", echo=FALSE}
+WITH RankedReps AS (
+    SELECT year, repName, SUM(totalSales) AS totalAmountSold,
+           ROW_NUMBER() OVER (PARTITION BY year ORDER BY SUM(totalSales) DESC) AS rnk
+    FROM rep_facts
+    GROUP BY year, repName
+)
+SELECT year, repName, totalAmountSold
+FROM RankedReps
+WHERE rnk <= 5
+ORDER BY year, rnk;
+```
+
+
+Below are the tables for the top five sales reps in each year, ordered by most amount sold to least amount sold:
+
+```{r Query I Table, echo = FALSE, results='asis'}
+# Format the values in the 'totalAmountSold' column with commas and add a dollar sign
+df1$totalAmountSold <- paste0("$ ", format(df1$totalAmountSold, big.mark = ","))
+
+# Split the data frame into a list of data frames based on the 'year' column
+df_list <- split(df1, df1$year)
+
+# Iterate over each data frame in the list
+for (year in names(df_list)) 
+{
+  # Drop the 'year' column from the data frame
+  df_list[[year]] <- df_list[[year]][ , !names(df_list[[year]]) == "year", drop = FALSE]
+  
+  # Print data frame as table using kable
+  print(knitr::kable(df_list[[year]], format = "markdown", row.names = FALSE, caption = paste("Top 5 Sales Reps with Most Sales in ", year)))
+  
+  # Add a separator between tables
+  cat("\n\n")
+}
+```
+From the above tables it is observed that Walison da Silva had the highest sales record in all years and it can also be noted that the top 5 sales amounts in 2021 is higher than the other years.
+
+## Total Sold per Product per Quarter
+
+```{sql Analytical Query II, connection=con, output.var="df2", echo=FALSE}
+SELECT prodName, quarter, SUM(totalSales) AS totalAmountSold 
+ FROM product_facts
+GROUP BY prodName, quarter;
+```
+
+Below is the table for the total amount sold in each quarter across all years for every product, ordered by product names alphabetically:
+
+```{r Query II Table, echo = FALSE}
+# Make copy of results data frame df2
+df2.copy <- df2
+
+# Format the values in the 'totalAmountSold' column with commas and add a dollar sign
+df2.copy$totalAmountSold <- paste0("$ ", format(df2.copy$totalAmountSold, big.mark = ","))
+
+# Reshape data
+df2.copy <- reshape(df2.copy, idvar = "prodName", timevar = "quarter", direction = "wide")
+
+# Change column names 
+colnames(df2.copy) <- c("Product", "Q1", "Q2", "Q3", "Q4")
+
+# Print data frame as table using kable
+kable(df2.copy, format = "markdown", row.names = FALSE, caption = "Amount Sold per Product per Quarter")
+```
+
+From the table above we can observe that sales are usually higher in Q2 and Q3 for almost all the products compared to Q1 and Q4. We can also observe that sales amount for certain products like Zalofen are way higher than products like Diaprogenix across all quarters, due to difference in cost per unit.
+
+## Number of Units Sold per Product per Region
+
+```{sql Analytical Query III, connection=con, output.var="df3", echo=FALSE}
+SELECT prodName, territory, SUM(totalQty) AS numUnitSold 
+ FROM product_facts
+GROUP BY prodName, territory
+ORDER BY prodName, territory;
+```
+
+Below is the table and line graph representing the number of units sold for each product in each region, ordered and grouped by product name:
+
+```{r Query III Table, echo = FALSE}
+# Make copy of results data frame df3
+df3.copy <- df3
+
+# Format the values in the 'numUnitSold' column with commas
+df3.copy$numUnitSold <- format(df3.copy$numUnitSold, big.mark = ",")
+
+# Print data frame as table using kable
+kable(head(df3.copy, 12), format = "markdown", row.names = FALSE, caption = "Units Sold per Product per Region (First 12 rows)")
+```
+
+From the table above we can see the exact values of total number of units sold in each region for each product.
+
+```{r Query III Line Graph, echo = FALSE, results = 'hide'}
+# Plot the line graph
+ggplot(df3, aes(x = prodName, y = numUnitSold, color = territory, group = territory)) +
+  # Add lines
+  geom_line() +
+  # Add points on lines
+  geom_point() +  
+  # Add labels to axes and legend
+  labs(title = "Number of units sold per product per region",
+       x = "Product",
+       y = "Number of Units",
+       color = "Region") +
+  # Set theme
+  theme_minimal() +
+  # Scale values on y-axis: 
+  # limits between min value and 1.1 x max value of number of Units Sold
+  # breaks every 50000 values
+  # Add commas to values in y-axis
+  scale_y_continuous(limits = c(min(df3$numUnitSold), max(df3$numUnitSold) * 1.1),
+                     breaks = seq(0, max(df3$numUnitSold) * 1.1, by = 50000), 
+                     labels = scales::comma) +
+  # Adjust labels on x-axis to be inclined
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+From the graph above we can see the comparison between units sold in each region for each product. A higher quantity of units have been sold in the EMEA and South America regions compared to the East and West regions for all products.
+
+## Average Sales per Sales Rep (Over The Years)
+
+```{sql Analytical Query IV, connection=con, output.var="df4", echo=FALSE}
+SELECT repName, year, SUM(numSales) As totalNumSales, ROUND(SUM(totalSales)/SUM(numSales), 1) AS avgAmountSold 
+ FROM rep_facts
+GROUP BY repName, year
+ORDER BY year, avgAmountSold DESC;
+```
+
+Below is the table and line graph depicting the average sale amount and the total number of sales for each rep in each year, ordered by year and the average sale amount.
+
+```{r Query IV Table, echo = FALSE}
+# Make copy of results data frame df4
+df4.copy <- df4
+
+# Format the values in the 'avgAmountSold' column with commas and add a dollar sign
+df4.copy$avgAmountSold <- paste0("$ ", format(df4.copy$avgAmountSold, big.mark = ","))
+
+# Print data frame as table using kable
+kable(df4.copy, format = "markdown", row.names = FALSE, caption = "Average Sales per Sales Rep per Year")
+```
+
+From the table above we can see that Helmut Schwab had a higher average sale amount in 2020 and 2021 while having a less number of sales during that period. Similarly we can see that the number of sales was higher in 2021 for all sales reps.
+
+```{r Query IV Line Graph, echo = FALSE, results = 'hide'}
+# Plot the line graph
+ggplot(df4, aes(x = year, y = avgAmountSold, color = repName, group = repName)) +
+  
+  # Add lines
+  geom_line() +
+  # Add points on lines
+  geom_point() +
+  # Add labels to axes and legend
+  labs(title = "Average Sale Amount Over the Years by Sales Rep",
+       x = "Year",
+       y = "Sale Amount",
+       color = "Sales Rep") +
+  # Set theme
+  theme_minimal() +
+  # Scale values on x-axis:
+  # breaks every 1 value
+  scale_x_continuous(breaks = seq(min(df4$year), max(df4$year), by = 1)) +
+  # Scale values on y-axis: 
+  # limits between min value and 1.1 x max value of average amount Sold
+  # breaks every 500 values
+  # Add commas to values in y-axis
+  scale_y_continuous(limits = c(min(df4$avgAmountSold), max(df4$avgAmountSold) * 1.1),
+                     breaks = seq(0, max(df4$avgAmountSold) * 1.1, by = 500), 
+                     labels = scales::comma)
+```
+From the graph above we can see that Prasad Patel had a decrease in average sale amount from 2020 to 2021 but a steep increase from 2021 to 2022. We can also see that Helmut Schwab's average sale amount has been decreasing over the years while both Aneeta Kappoorthy and Wallison da Silva's average sale amount has been slowly increasing over the years.
+
+```{r Disconnect DB, echo = FALSE, results = 'hide'}
+# Disconnect from DB
+dbDisconnect(con)
+```
+
